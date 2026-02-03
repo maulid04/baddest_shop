@@ -1,5 +1,0 @@
-.env
-*.sql
-*.db
-/vendor/
-/node_modules/

@@ -11,6 +11,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['action']) && $_POST['action'] === 'delete') {
         $product_id = (int)($_POST['product_id'] ?? 0);
         if ($product_id > 0) {
+            // Get product image path to delete the file
+            $stmt = $pdo->prepare("SELECT image_path FROM products WHERE id = ?");
+            $stmt->execute([$product_id]);
+            $product = $stmt->fetch();
+            
+            if ($product && !empty($product['image_path'])) {
+                $image_file = realpath(__DIR__ . '/..') . DIRECTORY_SEPARATOR . $product['image_path'];
+                if (file_exists($image_file)) {
+                    @unlink($image_file);
+                }
+            }
+            
             $stmt = $pdo->prepare("DELETE FROM products WHERE id = ?");
             $stmt->execute([$product_id]);
         }
@@ -18,34 +30,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // Handle product creation (add new product)
     $product_id = !empty($_POST['product_id']) ? (int)$_POST['product_id'] : null;
-    $name = trim($_POST['name'] ?? '');
-    $description = trim($_POST['description'] ?? '');
-    $price = $_POST['price'] ?? 0;
-    $category = trim($_POST['category'] ?? '');
+    
+    if (!$product_id) {
+        // Create new product
+        $name = trim($_POST['name'] ?? '');
+        $description = trim($_POST['description'] ?? '');
+        $price = (float)($_POST['price'] ?? 0);
+        $category = trim($_POST['category'] ?? '');
 
-    $image_path = '';
-    if (isset($_FILES['image']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
-        $upload_dir = realpath(__DIR__ . '/..') . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'images' . DIRECTORY_SEPARATOR;
-        if (!is_dir($upload_dir)) {
-            mkdir($upload_dir, 0755, true);
+        if (empty($name) || $price <= 0) {
+            header('Location: manage_products.php');
+            exit;
         }
-        $filename = uniqid() . '_' . basename($_FILES['image']['name']);
-        $target_file = $upload_dir . $filename;
-        if (move_uploaded_file($_FILES['image']['tmp_name'], $target_file)) {
-            $image_path = 'assets/images/' . $filename;
-        }
-    }
 
-    if ($product_id) {
-        if ($image_path) {
-            $stmt = $pdo->prepare("UPDATE products SET name = ?, description = ?, price = ?, category = ?, image_path = ? WHERE id = ?");
-            $stmt->execute([$name, $description, $price, $category, $image_path, $product_id]);
-        } else {
-            $stmt = $pdo->prepare("UPDATE products SET name = ?, description = ?, price = ?, category = ? WHERE id = ?");
-            $stmt->execute([$name, $description, $price, $category, $product_id]);
+        $image_path = '';
+        if (isset($_FILES['image']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
+            $upload_dir = realpath(__DIR__ . '/..') . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'images' . DIRECTORY_SEPARATOR;
+            if (!is_dir($upload_dir)) {
+                mkdir($upload_dir, 0755, true);
+            }
+            $filename = uniqid('product_', true) . '.' . strtolower(pathinfo($_FILES['image']['name'], PATHINFO_EXTENSION));
+            $target_file = $upload_dir . $filename;
+            if (move_uploaded_file($_FILES['image']['tmp_name'], $target_file)) {
+                $image_path = 'assets/images/' . $filename;
+            }
         }
-    } else {
+
         $stmt = $pdo->prepare("INSERT INTO products (name, description, price, category, image_path) VALUES (?, ?, ?, ?, ?)");
         $stmt->execute([$name, $description, $price, $category, $image_path]);
         $new_id = $pdo->lastInsertId();
@@ -98,7 +110,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <div id="product-form" style="display: none; margin-top: 2rem; background: #f8f8f8; padding: 1rem; border-radius: 8px;"> 
                 <h2 id="form-title">Add Product</h2>
-                <form action="manage_products.php" method="post" enctype="multipart/form-data">
+                <div id="form-message" style="display: none; margin-bottom: 1rem; padding: 0.75rem; border-radius: 4px;"></div>
+                <form id="product-form-element" enctype="multipart/form-data">
                     <input type="hidden" id="product_id" name="product_id">
                     <div class="form-group">
                         <label for="name">Name:</label>
@@ -119,8 +132,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div class="form-group">
                         <label for="image">Image:</label>
                         <input type="file" id="image" name="image" accept="image/*">
+                        <small style="display: block; margin-top: 0.25rem; color: #666;">Max file size: 5MB. Allowed formats: JPG, PNG, GIF, WebP</small>
                     </div>
-                    <button type="submit" class="btn-primary">Save</button>
+                    <button type="submit" class="btn-primary" id="save-btn">Save</button>
                     <button type="button" class="btn-secondary" onclick="hideForm()">Cancel</button>
                 </form>
             </div>
@@ -130,6 +144,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <script src="../assets/js/scripts.js"></script>
     <script>
         let products = [];
+        let isAddingProduct = false;
 
         async function loadProducts() {
             try {
@@ -151,10 +166,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <td>${product.id}</td>
                     <td>${product.name}</td>
                     <td>$${product.price}</td>
-                    <td>${product.category}</td>
+                    <td>${product.category || 'N/A'}</td>
                     <td>
-                        <a href="#" onclick="editProduct(${product.id})">Edit</a> |
-                        <a href="#" onclick="deleteProduct(${product.id})">Delete</a>
+                        <a href="#" onclick="editProduct(${product.id}); return false;">Edit</a> |
+                        <a href="#" onclick="deleteProduct(${product.id}); return false;">Delete</a>
                     </td>
                 `;
                 tbody.appendChild(row);
@@ -162,42 +177,148 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         function showAddForm() {
+            isAddingProduct = true;
             document.getElementById('form-title').textContent = 'Add Product';
             document.getElementById('product_id').value = '';
             document.getElementById('name').value = '';
             document.getElementById('description').value = '';
             document.getElementById('price').value = '';
             document.getElementById('category').value = '';
+            document.getElementById('image').value = '';
+            document.getElementById('form-message').style.display = 'none';
             document.getElementById('product-form').style.display = 'block';
+            document.getElementById('save-btn').textContent = 'Save';
         }
 
-        function editProduct(id) {
+        async function editProduct(id) {
             const product = products.find(p => p.id == id);
             if (product) {
+                isAddingProduct = false;
                 document.getElementById('form-title').textContent = 'Edit Product';
                 document.getElementById('product_id').value = product.id;
                 document.getElementById('name').value = product.name;
-                document.getElementById('description').value = product.description;
+                document.getElementById('description').value = product.description || '';
                 document.getElementById('price').value = product.price;
-                document.getElementById('category').value = product.category;
+                document.getElementById('category').value = product.category || '';
+                document.getElementById('image').value = ''; // Clear file input
+                document.getElementById('form-message').style.display = 'none';
                 document.getElementById('product-form').style.display = 'block';
+                document.getElementById('save-btn').textContent = 'Update';
+
+                // Fetch full product details if needed
+                try {
+                    const response = await fetch('get_product.php?id=' + id);
+                    const productData = await response.json();
+                    if (productData) {
+                        document.getElementById('description').value = productData.description || '';
+                    }
+                } catch (error) {
+                    console.error('Error fetching product details:', error);
+                }
             }
         }
 
         function hideForm() {
             document.getElementById('product-form').style.display = 'none';
+            document.getElementById('form-message').style.display = 'none';
+        }
+
+        function showFormMessage(message, isSuccess) {
+            const messageEl = document.getElementById('form-message');
+            messageEl.textContent = message;
+            messageEl.style.display = 'block';
+            messageEl.style.backgroundColor = isSuccess ? '#d4edda' : '#f8d7da';
+            messageEl.style.color = isSuccess ? '#155724' : '#721c24';
+            messageEl.style.borderLeft = '3px solid ' + (isSuccess ? '#28a745' : '#dc3545');
+        }
+
+        async function submitProductForm(event) {
+            event.preventDefault();
+
+            const productId = document.getElementById('product_id').value;
+            const name = document.getElementById('name').value;
+            const description = document.getElementById('description').value;
+            const price = document.getElementById('price').value;
+            const category = document.getElementById('category').value;
+            const image = document.getElementById('image').files[0];
+
+            // Validate fields
+            if (!name) {
+                showFormMessage('Product name is required', false);
+                return;
+            }
+            if (!price || parseFloat(price) <= 0) {
+                showFormMessage('Product price must be greater than 0', false);
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('product_id', productId);
+            formData.append('name', name);
+            formData.append('description', description);
+            formData.append('price', price);
+            formData.append('category', category);
+            if (image) {
+                formData.append('image', image);
+            }
+
+            try {
+                const endpoint = isAddingProduct ? 'manage_products.php' : 'update_product.php';
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    body: isAddingProduct ? new URLSearchParams(formData) : formData
+                });
+
+                if (isAddingProduct) {
+                    // For adding, redirect after success
+                    loadProducts();
+                    hideForm();
+                    showFormMessage('Product added successfully', true);
+                    setTimeout(() => {
+                        location.reload();
+                    }, 1500);
+                } else {
+                    // For updating, use JSON response
+                    const jsonResponse = await response.json();
+                    if (jsonResponse.success) {
+                        showFormMessage('Product updated successfully!', true);
+                        setTimeout(() => {
+                            hideForm();
+                            loadProducts();
+                        }, 1500);
+                    } else {
+                        showFormMessage(jsonResponse.message || 'Failed to update product', false);
+                    }
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showFormMessage('An error occurred: ' + error.message, false);
+            }
         }
 
         function deleteProduct(id) {
-            if (confirm('Are you sure you want to delete this product?')) {
+            if (confirm('Are you sure you want to delete this product? This action cannot be undone.')) {
                 fetch('manage_products.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: `action=delete&product_id=${id}`
-                }).then(() => loadProducts());
+                }).then(() => {
+                    showFormMessage('Product deleted successfully', true);
+                    loadProducts();
+                }).catch(error => {
+                    console.error('Error deleting product:', error);
+                    showFormMessage('Failed to delete product', false);
+                });
             }
         }
 
-        document.addEventListener('DOMContentLoaded', loadProducts);
+        // Form submission handler
+        document.addEventListener('DOMContentLoaded', () => {
+            loadProducts();
+            const form = document.getElementById('product-form-element');
+            if (form) {
+                form.addEventListener('submit', submitProductForm);
+            }
+        });
     </script>
 </body>
